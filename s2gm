@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+import argparse
+import spotipy
+import spotipy.util as util
+import sys
+import time
+from gmusicapi import Mobileclient
+from termcolor import colored, cprint
+
+def info(info):
+    print(colored("Info:", 'green', attrs=['bold']) + " " + info)
+def warn(warning):
+    print(colored("Warning:", 'yellow', attrs=['bold']) + " " + warning)
+def err(error):
+    print(colored("Error:", 'red', attrs=['bold']) + " " + error)
+
+def get_spotify_playlist(user, uri, sp):
+    # correct uri if the user used the full uri format
+    if ':' in uri:
+        uri = uri[uri.rfind(':') + 1:]
+        info("Spotify URI automatically corrected to " + uri)
+
+    playlists = sp.user_playlists(user)
+    found = False
+    playlist = None
+    name = None
+    for p in playlists['items']:
+        if p['id'] == uri:
+            found = True
+            playlist = sp.user_playlist(user, p['id'], fields="tracks,next")
+            name = p['name']
+
+    return (found, playlist, name)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Tries to convert a user's Spotify playlist to a Play music playlist with only songs in that user's library.")
+    parser.add_argument('uri', metavar='uri', type=str)
+    parser.add_argument('--email', help="Google username", required=True)
+    parser.add_argument('--password', help="Google password", required=True)
+    parser.add_argument('--spotifyuser', help="Spotify username", required=True)
+    parser.add_argument('--name', help="Name to assign to the resulting playlist. If blank, the Spotify playlist name will be used")
+    parser.add_argument('--skip', dest="skip", help="Skip missing songs", action="store_true")
+    parser.set_defaults(skip=False)
+    args = parser.parse_args()
+
+    # init spotify object with oauth token
+    scope = "user-library-read"
+    token = util.prompt_for_user_token(args.spotifyuser, scope)
+    sp = spotipy.Spotify(auth=token)
+
+    # retrieve playlist
+    found, playlist, name = get_spotify_playlist(args.spotifyuser, args.uri, sp)
+    if found:
+        info("Successfully loaded playlist " + name + " from " + args.spotifyuser + "'s library")
+        if args.name == None:
+            args.name = name
+
+        # init play music
+        api = Mobileclient()
+        api.login(args.email, args.password, Mobileclient.FROM_MAC_ADDRESS)
+
+        if api.is_authenticated():
+            info("Authenticated with Google Play Music")
+            library = api.get_all_songs()
+            playlists = api.get_all_playlists()
+
+            for p in playlists:
+                if p['name'] == args.name:
+                    choice = None
+                    while (choice == None):
+                        warn("A playlist with name already exists")
+                        print("   1. Overwrite (delete existing playlist and create a new one)")
+                        print("   2. Update (add any songs that aren't already on the playlist)")
+                        print("   3. Abort")
+                        answer = input("Choice (1-3): ")
+                        try:
+                            answer = int(answer)
+                            if answer >= 1 and answer <= 3:
+                                choice = answer
+                            else:
+                                err("Please enter a number between 1 and 3")
+                        except ValueError:
+                            err("Please enter a number")
+
+                    if choice == 1:
+                        api.delete_playlist(p['id'])
+                    else:
+                        err("Choice not implemented yet, doh!")
+                        api.logout()
+                        sys.exit(1)
+
+            id = api.create_playlist(name)
+            missing = list()
+            songs = list()
+            success = True
+            for i, item in enumerate(playlist['tracks']['items']):
+                track = item['track']
+                artist = track['artists'][0]['name']
+                title = track['name']
+
+                found = False
+                for song in library:
+                    if song['title'] == title and song['artist'] == artist:
+                        info("Found " + title + " by " + artist)
+                        songs.append(song['id'])
+                        found = True
+                        break
+                if not found:
+                    if args.skip:
+                        warn(title + " by " + artist + " not found in library, skipping")
+                        missing.append((title, artist))
+                    else:
+                        err(title + " by " + artist + " not found in library. Undoing changes and aborting.")
+                        success = False
+                        api.delete_playlist(id)
+
+            if success:
+                api.add_songs_to_playlist(id, songs)
+
+            cprint("Summary:", 'magenta', attrs=['bold'])
+            if len(missing) == 0 and success:
+                cprint("   All songs found in library", 'green')
+                cprint("   Playlist " + name + " created successfully", 'green')
+            elif args.skip:
+                cprint("   Missing songs:", 'yellow', attrs=['bold'])
+                for s in missing:
+                    print("      " + s[1] + " - " + s[0])
+                cprint("   Playlist " + name + " created successfully with missing songs", 'green')
+            else:
+                cprint("   Missing a track, conversion unsuccessful", 'red')
+                cprint("   Created a playlist, but then deleted it", 'red')
+
+            info("Logging out...")
+            api.logout()
+
+
+
+        else:
+            err("Problem authenticating with Google Play Music. Ensure credentials are correct and try again.")
+
+    else:
+        err("Playlist not found in " + args.spotifyuser + "'s library! Make sure that the user owns the playlist.")
