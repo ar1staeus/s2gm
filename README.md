@@ -39,8 +39,11 @@ Dependencies:
 - gmusicapi
 - termcolor
 
-Install with pip:
+Install with Python distutils:
 
 ```
-pip install s2gm
+git clone https://github.com/ar1staeus/s2gm.git && cd s2gm
+python setup.py sdist && cd dist
+tar -xvf * && cd *
+sudo python setup.py install
 ```
